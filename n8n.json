@@ -1,0 +1,240 @@
+{
+    "workflows": [
+      {
+        "name": "Hotel Booking Confirmation Workflow",
+        "description": "Automatically calls guests 24 hours before check-in",
+        "nodes": [
+          {
+            "id": "1",
+            "name": "Schedule Trigger",
+            "type": "n8n-nodes-base.cron",
+            "typeVersion": 1,
+            "position": [250, 300],
+            "parameters": {
+              "rule": {
+                "interval": [
+                  {
+                    "field": "cronExpression",
+                    "expression": "0 10 * * *"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "2", 
+            "name": "Get Pending Bookings",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 1,
+            "position": [450, 300],
+            "parameters": {
+              "url": "http://localhost:8000/api/bookings/pending-confirmation",
+              "method": "GET",
+              "headers": {
+                "Content-Type": "application/json"
+              }
+            }
+          },
+          {
+            "id": "3",
+            "name": "Filter Tomorrow's Check-ins", 
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [650, 300],
+            "parameters": {
+              "functionCode": "const tomorrow = new Date();\ntomorrow.setDate(tomorrow.getDate() + 1);\nconst tomorrowStr = tomorrow.toISOString().split('T')[0];\n\nconst filteredBookings = items.filter(item => {\n  const checkInDate = item.json.check_in_date.split('T')[0];\n  return checkInDate === tomorrowStr;\n});\n\nreturn filteredBookings;"
+            }
+          },
+          {
+            "id": "4",
+            "name": "Initiate Voice Call",
+            "type": "n8n-nodes-base.httpRequest", 
+            "typeVersion": 1,
+            "position": [850, 300],
+            "parameters": {
+              "url": "http://localhost:8000/api/calls/outbound",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": {
+                "booking_id": "={{$json.booking_id}}",
+                "guest_name": "={{$json.guest_name}}",
+                "phone_number": "={{$json.phone_number}}",
+                "call_type": "confirmation",
+                "message_template": "check_in_reminder"
+              }
+            }
+          },
+          {
+            "id": "5",
+            "name": "Send Email Notification",
+            "type": "n8n-nodes-base.gmail",
+            "typeVersion": 1, 
+            "position": [1050, 400],
+            "parameters": {
+              "operation": "send",
+              "email": "hotel-manager@hotel.com",
+              "subject": "Automated Call Completed - {{$json.guest_name}}",
+              "message": "Confirmation call completed for booking #{{$json.booking_id}}"
+            }
+          }
+        ],
+        "connections": {
+          "Schedule Trigger": {
+            "main": [["Get Pending Bookings"]]
+          },
+          "Get Pending Bookings": {
+            "main": [["Filter Tomorrow's Check-ins"]]
+          },
+          "Filter Tomorrow's Check-ins": {
+            "main": [["Initiate Voice Call"]]
+          },
+          "Initiate Voice Call": {
+            "main": [["Send Email Notification"]]
+          }
+        }
+      },
+      {
+        "name": "Failed Call Retry Workflow",
+        "description": "Retries failed calls with exponential backoff",
+        "nodes": [
+          {
+            "id": "1",
+            "name": "Webhook Trigger",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [250, 300],
+            "parameters": {
+              "path": "call-failed",
+              "httpMethod": "POST"
+            }
+          },
+          {
+            "id": "2",
+            "name": "Check Retry Count",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [450, 300],
+            "parameters": {
+              "functionCode": "const maxRetries = 3;\nconst retryCount = $json.retry_count || 0;\n\nif (retryCount >= maxRetries) {\n  return [null, $json]; // Too many retries, send to failure branch\n}\n\n// Calculate delay: 2^retry_count hours\nconst delayHours = Math.pow(2, retryCount);\n$json.retry_delay = delayHours;\n$json.retry_count = retryCount + 1;\n\nreturn [$json, null];"
+            }
+          },
+          {
+            "id": "3",
+            "name": "Schedule Retry",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 1,
+            "position": [650, 250],
+            "parameters": {
+              "url": "http://localhost:8000/api/calls/schedule-retry",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": "={{$json}}"
+            }
+          },
+          {
+            "id": "4",
+            "name": "Mark as Failed",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 1,
+            "position": [650, 350],
+            "parameters": {
+              "url": "http://localhost:8000/api/calls/mark-failed",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": "={{$json}}"
+            }
+          }
+        ],
+        "connections": {
+          "Webhook Trigger": {
+            "main": [["Check Retry Count"]]
+          },
+          "Check Retry Count": {
+            "main": [["Schedule Retry"], ["Mark as Failed"]]
+          }
+        }
+      },
+      {
+        "name": "Guest Satisfaction Survey",
+        "description": "Sends post-stay survey calls",
+        "nodes": [
+          {
+            "id": "1",
+            "name": "Daily Check",
+            "type": "n8n-nodes-base.cron",
+            "typeVersion": 1,
+            "position": [250, 300],
+            "parameters": {
+              "rule": {
+                "interval": [
+                  {
+                    "field": "cronExpression", 
+                    "expression": "0 14 * * *"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "id": "2",
+            "name": "Get Recent Checkouts",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 1,
+            "position": [450, 300],
+            "parameters": {
+              "url": "http://localhost:8000/api/bookings/recent-checkouts",
+              "method": "GET"
+            }
+          },
+          {
+            "id": "3",
+            "name": "Filter 2-Day Old Checkouts",
+            "type": "n8n-nodes-base.function",
+            "typeVersion": 1,
+            "position": [650, 300],
+            "parameters": {
+              "functionCode": "const twoDaysAgo = new Date();\ntwoDaysAgo.setDate(twoDaysAgo.getDate() - 2);\nconst targetDate = twoDaysAgo.toISOString().split('T')[0];\n\nconst eligibleGuests = items.filter(item => {\n  const checkOutDate = item.json.check_out_date.split('T')[0];\n  return checkOutDate === targetDate && !item.json.survey_completed;\n});\n\nreturn eligibleGuests;"
+            }
+          },
+          {
+            "id": "4",
+            "name": "Initiate Survey Call",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 1,
+            "position": [850, 300],
+            "parameters": {
+              "url": "http://localhost:8000/api/calls/outbound",
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": {
+                "booking_id": "={{$json.booking_id}}",
+                "guest_name": "={{$json.guest_name}}", 
+                "phone_number": "={{$json.phone_number}}",
+                "call_type": "survey",
+                "message_template": "satisfaction_survey"
+              }
+            }
+          }
+        ],
+        "connections": {
+          "Daily Check": {
+            "main": [["Get Recent Checkouts"]]
+          },
+          "Get Recent Checkouts": {
+            "main": [["Filter 2-Day Old Checkouts"]]
+          },
+          "Filter 2-Day Old Checkouts": {
+            "main": [["Initiate Survey Call"]]
+          }
+        }
+      }
+    ]
+  }
